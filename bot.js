@@ -547,7 +547,7 @@ async function syncGTTStatuses(kite, openPos) {
 
 // ─── Exit evaluation ──────────────────────────────────────────────────────────
 
-function evaluateExit(pos, candles, mktBull) {
+function evaluateExit(pos, candles) {
   const closes   = candles.map((c) => c.close);
   const price    = closes[closes.length - 1];
   const openP    = candles[candles.length - 1].open;
@@ -571,8 +571,6 @@ function evaluateExit(pos, candles, mktBull) {
     return { action: "FULL EXIT", reason: `🛑 Stop loss hit ₹${price.toFixed(2)} (${pnlPct(price, pos.entryPrice)}%)`, price };
   if (price < swingLow && !hhhl(candles, 20))
     return { action: "FULL EXIT", reason: `📉 Swing low broken ₹${swingLow.toFixed(2)} — structure failed`, price };
-  if (!mktBull)
-    return { action: "FULL EXIT", reason: "🌧️  Market turned bearish — exiting", price };
   if (highVolBear)
     return { action: "FULL EXIT", reason: "🔴 Strong bearish candle + high volume", price };
 
@@ -596,7 +594,7 @@ function pnlPct(price, entry) { return ((price - entry) / entry * 100).toFixed(2
 
 // ─── Exit runner ──────────────────────────────────────────────────────────────
 
-async function checkAndExecuteExits(kite, openPos, mktBull) {
+async function checkAndExecuteExits(kite, openPos) {
   if (openPos.length === 0) return;
   console.log("── Open Positions ────────────────────────────────────────\n");
 
@@ -613,7 +611,7 @@ async function checkAndExecuteExits(kite, openPos, mktBull) {
 
     try {
       const candles  = await fetchCandles(kite, pos.symbol, "1D", 100);
-      const decision = evaluateExit(fresh, candles, mktBull);
+      const decision = evaluateExit(fresh, candles);
       const sign     = decision.price >= fresh.entryPrice ? "+" : "";
       const daysHeld = Math.floor((Date.now() - new Date(fresh.entryDate).getTime()) / 86400000);
 
@@ -1112,7 +1110,7 @@ async function scan() {
 
   const positions = loadPositions();
   const openPos   = openPositions(positions);
-  await checkAndExecuteExits(kite, openPos, mktBull);
+  await checkAndExecuteExits(kite, openPos);
 
   // ── ENTRY SCAN ──────────────────────────────────────────────────────────────
 
