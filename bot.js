@@ -92,7 +92,7 @@ function initKite() {
 const YF_SYMBOL_MAP = {
   // Index symbols
   NIFTY50: "^NSEI", NIFTYBANK: "^NSEBANK",
-  // Kite symbol → Yahoo Finance symbol (where they differ)
+  // Kite symbol → Yahoo Finance symbol (verified working)
   "NAVIN":        "NAVINFLUOR.NS",
   "AARTI":        "AARTIIND.NS",
   "BERGERPAINTS": "BERGEPAINT.NS",
@@ -100,23 +100,23 @@ const YF_SYMBOL_MAP = {
   "HG":           "HGINFRA.NS",
   "AHLUWALIA":    "AHLUCONT.NS",
   "MCDOWELL-N":   "UNITDSPR.NS",
-  "FINOLEX":      "FINOLEXCAB.NS",
+  "FINOLEX":      "FINCABLES.NS",       // was FINOLEXCAB.NS — fixed
   "LAXMIMACH":    "LMW.NS",
   "VARDHMAN":     "VTL.NS",
-  "BARBEQUE":     "BARBEQUE-N.NS",
   "FINPIPE":      "FINPIPE.NS",
-  // Additional 404 fixes
-  "TATAMOTORS":   "TATAMOTORS.NS",
-  "ADANITRANS":   "ADANITRANS.NS",
-  "ZOMATO":       "ZOMATO.NS",
-  "HEXAWARE":     "HEXAWARE.NS",
-  "AMARARAJA":    "AMARAJABAT.NS",
-  "KALPATPOWR":   "KALPATPOWR.NS",
-  "INSECTICIDES": "INSECTICID.NS",
+  // Renamed/restructured companies
+  "HEXAWARE":     "HEXT.NS",            // relisted as HEXT
+  "AMARARAJA":    "ARE&M.NS",           // renamed Amara Raja Energy & Mobility
+  "KALPATPOWR":   "KPIL.NS",            // renamed Kalpataru Projects International
+  "GMRINFRA":     "GMRAIRPORT.NS",      // renamed GMR Airports
+  "ESAB":         "ESABINDIA.NS",
   "MTAR":         "MTARTECH.NS",
-  "TV18BRDCST":   "TV18BRDCST.NS",
-  "GMRINFRA":     "GMRINFRA.NS",
   "GVK":          "GVKPIL.NS",
+  "INSECTICIDES": "INSECTICID.NS",
+  // BSE code fallbacks (Yahoo NS data unavailable)
+  "TV18BRDCST":   "532800.BO",
+  "ADANITRANS":   "539254.BO",
+  // Not on Yahoo Finance (removed/delisted from YF data): TATAMOTORS, ZOMATO, BARBEQUE
 };
 const YF_INTERVAL_MAP = { "1D": "1d", "1W": "1wk" };
 const YF_RANGE_MAP    = { "1D": "1y", "1W": "2y" };
