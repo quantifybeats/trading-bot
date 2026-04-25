@@ -103,8 +103,20 @@ const YF_SYMBOL_MAP = {
   "FINOLEX":      "FINOLEXCAB.NS",
   "LAXMIMACH":    "LMW.NS",
   "VARDHMAN":     "VTL.NS",
-  "BARBEQUE":     "BARBEQUE.NS",
-  "FINPIPE":      "FNXINDIA.NS",
+  "BARBEQUE":     "BARBEQUE-N.NS",
+  "FINPIPE":      "FINPIPE.NS",
+  // Additional 404 fixes
+  "TATAMOTORS":   "TATAMOTORS.NS",
+  "ADANITRANS":   "ADANITRANS.NS",
+  "ZOMATO":       "ZOMATO.NS",
+  "HEXAWARE":     "HEXAWARE.NS",
+  "AMARARAJA":    "AMARAJABAT.NS",
+  "KALPATPOWR":   "KALPATPOWR.NS",
+  "INSECTICIDES": "INSECTICID.NS",
+  "MTAR":         "MTARTECH.NS",
+  "TV18BRDCST":   "TV18BRDCST.NS",
+  "GMRINFRA":     "GMRINFRA.NS",
+  "GVK":          "GVKPIL.NS",
 };
 const YF_INTERVAL_MAP = { "1D": "1d", "1W": "1wk" };
 const YF_RANGE_MAP    = { "1D": "1y", "1W": "2y" };
@@ -297,19 +309,18 @@ function volumePOC(candles, bins = 20) {
   return sorted.length ? parseFloat(sorted[0][0]) : null;
 }
 
-// ─── Institutional scorer — 1 hard block + 6 weighted peak conditions ────────
+// ─── Institutional scorer — 1 hard block + 5 weighted SMC conditions ─────────
 //
-//   Max score = 8pts.  BUY ≥ 4  |  STRONG BUY ≥ 6
-//   NIFTY direction = soft bonus (+1) — individual stock structure takes priority.
+//   Max score = 7pts.  BUY ≥ 4  |  STRONG BUY ≥ 6
+//   NIFTY index direction NOT scored — pure individual stock SMC analysis.
 //   Only hard block: RSI extreme (protects against buying overbought/oversold traps).
-//   Minimum quality BUY = BOS(2) + OB(2) = 4pts regardless of NIFTY direction.
-//   All analysis silent in backend; caller only sees signal + score.
+//   Minimum quality BUY = BOS(2) + OB(2) = 4pts.
+//   NIFTY bias shown in output as market context only — zero scoring impact.
 
 const CONDITIONS = [
   // Hard block — RSI extreme = structurally dangerous, skip always
   { id: "rsi_not_extreme", label: "RSI not extreme (20–78)",                hardBlock: true,  pts: 0 },
-  // Soft conditions — weighted by institutional significance
-  { id: "market_bullish",  label: "NIFTY bullish (>EMA20, HH/HL)",         hardBlock: false, pts: 1 },
+  // SMC conditions — weighted by institutional significance (index-independent)
   { id: "daily_bos",       label: "Bullish BOS — structure confirmed",      hardBlock: false, pts: 2 },
   { id: "near_ob",         label: "At unmitigated Bullish Order Block",     hardBlock: false, pts: 2 },
   { id: "near_fvg",        label: "Inside Bullish Fair Value Gap",          hardBlock: false, pts: 1 },
@@ -352,7 +363,7 @@ function scoreStock(symbol, daily, indexDaily) {
 
   for (const { id, label, hardBlock } of CONDITIONS) {
     if (hardBlock && !vals[id]) {
-      return { symbol, price, score: 0, maxScore: 8, signal: "BLOCKED", blockedBy: label, vals, indicators };
+      return { symbol, price, score: 0, maxScore: 7, signal: "BLOCKED", blockedBy: label, vals, indicators };
     }
   }
 
@@ -364,7 +375,7 @@ function scoreStock(symbol, daily, indexDaily) {
                : score >= CONFIG.buyThreshold        ? "BUY"
                : score >= 2                          ? "WATCHLIST"
                : "IGNORE";
-  return { symbol, price, score, maxScore: 8, signal, failed, vals, indicators };
+  return { symbol, price, score, maxScore: 7, signal, failed, vals, indicators };
 }
 
 // ─── Position sizing ──────────────────────────────────────────────────────────
@@ -1095,7 +1106,7 @@ async function scan() {
     }
   }
 
-  console.log(`Strategy: BUY≥${CONFIG.buyThreshold}/8 | STRONG BUY≥${CONFIG.strongBuyThreshold}/8 | scoring: BOS×2, OB×2, FVG/accum/weekly/NIFTY×1 | NIFTY = soft bonus only\n`);
+  console.log(`Strategy: BUY≥${CONFIG.buyThreshold}/7 | STRONG BUY≥${CONFIG.strongBuyThreshold}/7 | scoring: BOS×2, OB×2, FVG×1, accum×1, weekly×1 | NIFTY = context only\n`);
 
   // ── EXIT CHECK ──────────────────────────────────────────────────────────────
 
@@ -1142,7 +1153,7 @@ async function scan() {
   if (actionable.length === 0) {
     console.log(`  No setups found (score ≥ ${CONFIG.buyThreshold}).\n`);
   } else {
-    const maxScore = 8;
+    const maxScore = 7;
     console.log(`  ${"Symbol".padEnd(16)} ${"Signal".padEnd(14)} ${"Score".padEnd(8)} ${"Price".padEnd(12)} Missing`);
     console.log(`  ${"─".repeat(72)}`);
     for (const r of actionable) {
@@ -1197,8 +1208,7 @@ async function scan() {
   const executed = [];
 
   // Guard reason messages
-  if (false /* mktBull check removed — individual stock SMC decides */ ) console.log("");
-  else if (!marketOpen)       console.log(`  ⏸  Market closed (${istNowStr} IST) — no entries.\n`);
+  if (!marketOpen)            console.log(`  ⏸  Market closed (${istNowStr} IST) — no entries.\n`);
   else if (!preMarketDone)    console.log("  ⏸  Pre-market buffer (before 9:45 AM) — no entries.\n");
   else if (circuitTripped)    console.log(`  🚨 Daily loss circuit breaker — realised P&L ₹${dailyRealizedPnl.toFixed(0)} hit -${(CONFIG.dailyLossLimitPct*100).toFixed(0)}% limit. No entries today.\n`);
   else if (consecHaltTripped) console.log(`  🚨 ${consecLosses} consecutive losses — entries paused for the day. Review setups.\n`);
