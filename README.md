@@ -1,277 +1,240 @@
-# Claude + TradingView MCP — Automated Trading
+# NSE Swing Trading Bot — SMC + Quality Gates
 
-> **New to this?** Watch the previous video first — it sets up the TradingView MCP connection this builds on.
+Automated daily-timeframe swing trader for Indian equities (NIFTY 500 universe). Pure Smart Money Concepts entries, multi-gate quality filters, friction-aware risk/reward, and full reject-audit logging.
 
-[![How To Connect Claude to TradingView (Insanely Cool)](https://img.youtube.com/vi/vIX6ztULs4U/maxresdefault.jpg)](https://youtu.be/vIX6ztULs4U)
-
-[![Claude Code + TradingView Now Actually Executes Real Trades](https://img.youtube.com/vi/aDWJ6lLemJU/maxresdefault.jpg)](https://www.youtube.com/watch?v=aDWJ6lLemJU)
+Runs on Zerodha Kite Connect v3. Deploys to Railway. Posts every action to Telegram.
 
 ---
 
-## What This Does
+## What It Does
 
-**Five things you get from this setup:**
-
-1. **Claude connected to your exchange** — reads your TradingView chart and executes trades on BitGet automatically
-2. **A safety check** — every condition in your strategy must pass before a single trade goes through
-3. **24/7 cloud execution** — deploy to Railway and it runs on a schedule, even when your laptop is closed
-4. **Automatic tax accounting** — every trade logged to `trades.csv` with date, price, fees, and net amount, ready for your accountant
-5. **Free** — no email, no course, no upsell. Everything is in this repo.
-
----
-
-## The One-Shot Prompt
-
-> **This is the thing you paste.** Open Claude Code in this directory, paste the entire contents of [`prompts/02-one-shot-trade.md`](prompts/02-one-shot-trade.md), and Claude will do the rest.
-
-Here's what it does when you run it:
-
-| Step | What Claude does |
-|------|-----------------|
-| 1 | Reads your `rules.json` strategy |
-| 2 | Pulls live price + indicator data from TradingView |
-| 3 | Calculates MACD from raw candle data |
-| 4 | Evaluates market bias (bullish / bearish / neutral) |
-| 4b | Checks trade limits — daily cap and max trade size |
-| 5 | Runs the safety check — every entry condition checked |
-| 6 | Executes the trade via BitGet if all conditions pass |
-| 7 | Logs the trade to `trades.csv` — date, price, fees, net amount (tax-ready) |
-| 8 | Saves full decision log to `safety-check-log.json` |
-
-If anything fails the safety check, it stops and tells you exactly which condition failed and the actual values. No trade goes through unless everything lines up.
+1. **Scans 350+ NSE stocks** on daily candles, once per session (15:35 IST, post-close).
+2. **Scores each stock** on a weighted SMC rubric — Break of Structure, Order Block, Fair Value Gap, volume accumulation, weekly trend.
+3. **Filters survivors through 11 quality gates** — only setups passing every gate become trades.
+4. **Sizes positions** at 1% risk per trade, max 40% concentration, max 3 concurrent, max 2 per sector.
+5. **Executes** as paper trade or live two-leg GTT (stop + target) on Kite.
+6. **Manages exits** via stop, structure break, gap-down emergency, EMA21 trail, stagnation stop.
+7. **Logs everything** — trades to `trades.csv`, rejections to `rejects.csv`, scans to `safety-check-log.json`.
+8. **Notifies via Telegram** — scan summary, entry, exit, loss alerts, weekly report.
 
 ---
 
-## Getting Started
+## Tech Stack
 
-### Step 1 — Paste the one-shot prompt into Claude Code
-
-Copy the entire contents of [`prompts/02-one-shot-trade.md`](prompts/02-one-shot-trade.md) and paste it into your Claude Code terminal.
-
-That's it. Claude acts as your onboarding agent — it clones the repo, walks you through connecting BitGet, sets your trading preferences, connects TradingView, optionally builds a strategy from a YouTube channel, deploys to Railway, and runs the bot for the first time. Every step is interactive. It pauses when it needs something from you and handles everything else automatically.
-
----
-
-## What's Happening Under the Hood
-
-For anyone who wants to understand the steps manually, or troubleshoot a specific part:
-
-### Prerequisites
-
-- **TradingView MCP** must already be set up — built in the [first video](https://youtu.be/vIX6ztULs4U)
-- **Claude Code** installed and running
-- **A BitGet account** — [sign up here]([https://partner.bitget.com/bg/LewisJackson](https://bonus.bitget.com/LewisJackson)) for a $1,000 bonus on your first deposit
-- **Node.js 18+** — check with `node --version`
+| Layer | Tool |
+|-------|------|
+| Exchange | Zerodha Kite Connect v3 |
+| Data | Kite historical (Yahoo Finance fallback) |
+| Runtime | Node.js ≥ 18, ES modules |
+| Deploy | Railway cron (1× weekday EOD) |
+| Alerts | Telegram bot |
+| Auth | Auto-TOTP refresh via `auto-auth.js` |
 
 ---
 
-### Clone the repo
+## Strategy — Pure SMC, Index-Independent
 
-**Mac / Linux:**
+NIFTY direction is shown for context only. Zero weight in entries or exits. Each stock decided on its own structure.
+
+### Scoring (max 7 pts)
+
+| Condition | Points |
+|-----------|--------|
+| Bullish Break of Structure on daily | 2 |
+| Price at unmitigated Order Block | 2 |
+| Inside Bullish Fair Value Gap | 1 |
+| 3-day volume accumulation | 1 |
+| Weekly trend bullish (HH/HL) | 1 |
+
+- **Hard block**: RSI(14) outside 20–78 → discard immediately
+- **BUY** ≥ 4 pts (BOS + OB minimum)
+- **STRONG BUY** ≥ 6 pts
+
+### Quality Gates (all must pass)
+
+| Gate | Rule | Reject key |
+|------|------|------------|
+| RSI extreme | RSI 20–78 | `HARD_BLOCK` |
+| OB quality | Displacement ≥ 1.5×ATR + untested | `OB_QUALITY` |
+| Structure clean | HH/HL last 2 swings + < 4/5 chop wicks | `STRUCTURE` |
+| Pullback only | Price inside OB or FVG body | `PULLBACK_ONLY` |
+| Not extended | < 3 consecutive green candles | `EXTENDED` |
+| No retail trap | > 0.3% from 20d swing high | `RETAIL_TRAP` |
+| Confirmation | Bullish engulf or pin bar on last candle | `CONFIRMATION` |
+| Weekly regime | Weekly HH/HL OR DX ≥ 25 bullish | `REGIME` |
+| Sector cap | Max 2 open per sector | `SECTOR_CAP` |
+| Friction RR | (reward − 0.5%) / risk ≥ 2 | `RR_AFTER_COST` |
+| Price band | ≤ ₹5000 | `PRICE_LIMIT` |
+
+Every reject logged to `rejects.csv` with gate, reason, score, price, session.
+
+---
+
+## Exit Logic
+
+Priority order in `evaluateExit`:
+
+1. **Gap-down below stop** → emergency exit at open
+2. **Stop loss hit** → full exit
+3. **Swing low broken + structure failed** → full exit
+4. **High-volume bearish candle at loss** → full exit
+5. **1:2 target hit** → partial exit (½), stop moved to break-even
+6. **Close below EMA21 trail (after target1)** → full exit
+7. **Stagnation** — 10 sessions, range < 0.5×ATR → full exit
+8. Otherwise **HOLD**, optionally raise trail stop
+
+No hard time stop. Stagnation replaces it (capital efficiency, structure-aware).
+
+---
+
+## Risk Guards
+
+| Guard | Default | Env var |
+|-------|---------|---------|
+| Risk per trade | 1% portfolio | `RISK_PERCENT=0.01` |
+| Concentration | 40% per stock | `MAX_CONCENTRATION_PCT=0.40` |
+| Concurrent positions | 3 | `MAX_ACTIVE_TRADES=3` |
+| Max trades / day | 3 | `MAX_TRADES_PER_DAY=3` |
+| Max trades / week | 10 | `MAX_TRADES_PER_WEEK=10` |
+| Daily loss circuit | −2% | `DAILY_LOSS_LIMIT_PCT=0.02` |
+| Consecutive loss halt | 3 losses | `CONSECUTIVE_LOSS_HALT=3` |
+| Sector cap | 2 per sector | `MAX_PER_SECTOR=2` |
+| Friction cost | 0.5% | `FRICTION_COST_FRAC=0.005` |
+| Pre-market buffer | 9:45 AM IST entries | hardcoded |
+
+---
+
+## Setup
+
+### 1. Clone + install
 ```bash
-git clone https://github.com/jackson-video-resources/claude-tradingview-mcp-trading
-cd claude-tradingview-mcp-trading
+git clone https://github.com/quantifybeats/trading-bot.git
+cd trading-bot
+npm install
 ```
 
-**Windows:**
-```powershell
-git clone https://github.com/jackson-video-resources/claude-tradingview-mcp-trading
-cd claude-tradingview-mcp-trading
+### 2. Environment
+Create `.env`:
+```
+KITE_API_KEY=your_kite_api_key
+KITE_API_SECRET=your_kite_api_secret
+KITE_USER_ID=ABC123
+KITE_PASSWORD=your_password
+KITE_TOTP_SECRET=BASE32_TOTP_SECRET
+
+PORTFOLIO_VALUE_INR=200000
+PAPER_TRADING=true
+
+TELEGRAM_BOT_TOKEN=optional
+TELEGRAM_CHAT_ID=optional
 ```
 
----
-
-### Add your BitGet API credentials
-
-**Mac / Linux:**
+### 3. First auth
 ```bash
-cp .env.example .env
+# Open https://kite.zerodha.com/connect/login?api_key=YOUR_KEY
+# Login, copy request_token from redirect URL, run:
+node bot.js --auth REQUEST_TOKEN
 ```
+After this, `KITE_TOTP_SECRET` enables auto-refresh on subsequent runs.
 
-**Windows:**
-```powershell
-Copy-Item .env.example .env
-```
-
-Open `.env` and fill in:
-
-```
-BITGET_API_KEY=your_api_key_here
-BITGET_SECRET_KEY=your_secret_key_here
-BITGET_PASSPHRASE=your_passphrase_here
-PORTFOLIO_VALUE_USD=1000
-MAX_TRADE_SIZE_USD=100
-MAX_TRADES_PER_DAY=3
-```
-
-**Getting your API key:**
-
-Step-by-step guides for all supported exchanges:
-
-| Exchange | Guide |
-|----------|-------|
-| BitGet *(used in the video)* | [docs/exchanges/bitget.md](docs/exchanges/bitget.md) |
-| Binance | [docs/exchanges/binance.md](docs/exchanges/binance.md) |
-| Bybit | [docs/exchanges/bybit.md](docs/exchanges/bybit.md) |
-| OKX | [docs/exchanges/okx.md](docs/exchanges/okx.md) |
-| Coinbase Advanced | [docs/exchanges/coinbase.md](docs/exchanges/coinbase.md) |
-| Kraken | [docs/exchanges/kraken.md](docs/exchanges/kraken.md) |
-| KuCoin | [docs/exchanges/kucoin.md](docs/exchanges/kucoin.md) |
-| Gate.io | [docs/exchanges/gateio.md](docs/exchanges/gateio.md) |
-| MEXC | [docs/exchanges/mexc.md](docs/exchanges/mexc.md) |
-| Bitfinex | [docs/exchanges/bitfinex.md](docs/exchanges/bitfinex.md) |
-
-Two rules that apply to every exchange — **withdrawals OFF, IP whitelist ON**.
-
----
-
-### Launch TradingView and connect the MCP
-
-**Mac:**
+### 4. Run
 ```bash
-tv_launch
-tv_health_check
+node bot.js                  # full scan + exit check + entries
+node bot.js --positions      # show open positions + live P&L
+node bot.js --tax-summary    # trade summary for accountant
+node bot.js --sync           # sync positions.json with Kite holdings
 ```
-
-**Windows:** See [docs/setup-windows.md](docs/setup-windows.md)
-
-**Linux:** See [docs/setup-linux.md](docs/setup-linux.md)
-
-Verify with `tv_health_check` — should return `cdp_connected: true`.
-
----
-
-### Run the bot manually
-
-```bash
-node bot.js
-```
-
----
-
-## Deploy to Railway (Run in the Cloud 24/7)
-
-The local setup runs when your laptop is open. Railway lets the bot check for setups around the clock — even while you sleep.
-
-> **Note:** Cloud mode pulls candle data directly from Binance's free market API instead of TradingView. No TradingView Desktop needed in the cloud. The strategy logic and safety check are identical.
-
-### 1. Deploy
-
-```bash
-npm install -g @railway/cli
-railway login
-railway init
-railway up
-```
-
-### 2. Set your environment variables in Railway
-
-Go to your Railway project → Variables and add everything from `.env.example`:
-
-| Variable | Example |
-|----------|---------|
-| `BITGET_API_KEY` | your key |
-| `BITGET_SECRET_KEY` | your secret |
-| `BITGET_PASSPHRASE` | your passphrase |
-| `PORTFOLIO_VALUE_USD` | 1000 |
-| `MAX_TRADE_SIZE_USD` | 100 |
-| `MAX_TRADES_PER_DAY` | 3 |
-| `PAPER_TRADING` | true (set to false when ready) |
-| `SYMBOL` | BTCUSDT |
-| `TIMEFRAME` | 4H |
-
-### 3. Set a cron schedule
-
-In Railway → Settings → Cron Schedule, set how often the bot runs. Recommended:
-
-| Timeframe | Schedule | What it means |
-|-----------|----------|----------------|
-| 4H chart | `0 */4 * * *` | Every 4 hours |
-| 1D chart | `0 9 * * *` | Once a day at 9am UTC |
-| 1H chart | `0 * * * *` | Every hour |
-
-### 4. Start in paper trading mode
-
-`PAPER_TRADING=true` logs every decision but never places real orders. Watch a few days of paper trades, confirm the logic matches what you expect, then flip it to `false`.
-
----
-
-## Build Your Own Strategy (Optional)
-
-The example `rules.json` uses the van de Poppe + Tone Vays BTC strategy. To build one from any trader's public videos:
-
-1. Go to [Apify](https://apify.com?fpr=3ly3yd) and search the actor store for **YouTube Transcript Scraper** — takes about 30 seconds per channel
-2. Paste the output into `prompts/01-extract-strategy.md`
-3. Run that prompt in Claude Code — it generates a `rules.json` tailored to that trader's methodology
 
 ---
 
 ## Files
 
-| File | What it does |
-|------|-------------|
-| `rules.json` | Your strategy — indicators, entry rules, risk rules |
-| `.env` | Your BitGet credentials (gitignored — never commits) |
-| `prompts/01-extract-strategy.md` | Build rules.json from trader transcripts |
-| `prompts/02-one-shot-trade.md` | **The one-shot prompt — paste this to trade** |
-| `safety-check-log.json` | Auto-generated log of every trade decision |
-| `trades.csv` | Tax-ready trade record — auto-written on every execution |
-| `docs/setup-windows.md` | Windows-specific MCP setup |
-| `docs/setup-linux.md` | Linux-specific MCP setup |
+| File | Purpose |
+|------|---------|
+| `bot.js` | Main scanner, scorer, executor |
+| `kite.js` | Kite Connect v3 wrapper |
+| `auto-auth.js` | TOTP-based session refresh |
+| `notify.js` | Telegram alerts |
+| `watchlist.json` | NIFTY 500 universe + price limit |
+| `sectors.json` | Symbol → sector mapping (extend as needed) |
+| `positions.json` | Open + closed position state (auto-managed) |
+| `safety-check-log.json` | Per-scan decision log |
+| `trades.csv` | Tax-ready trade ledger |
+| `rejects.csv` | Every gate rejection (audit trail) |
+| `railway.json` | Deployment cron config |
 
 ---
 
-## Tax Accounting
+## Deployment (Railway)
 
-Every trade the bot places is automatically written to `trades.csv` with the columns your accountant needs:
+`railway.json` cron: `5 10 * * 1-5` UTC = **15:35 IST, Mon–Fri**.
 
-| Column | Description |
-|--------|-------------|
-| Date | ISO date of the trade |
-| Time | UTC time |
-| Exchange | BitGet |
-| Symbol | e.g. BTCUSDT |
-| Side | Buy / Sell |
-| Quantity | Units traded |
-| Price | Price per unit at execution |
-| Total USD | Gross trade value |
-| Fee (est.) | Estimated exchange fee |
-| Net Amount | Total USD minus fee |
-| Order ID | Exchange reference |
-| Mode | Paper / Live |
-
-At tax time: open the file, hand it to your accountant, or import it directly into your accounting software. Nothing to reconstruct.
-
-For a quick summary of your trading activity, run:
+Single end-of-day scan. No intraday duplicates.
 
 ```bash
-node bot.js --tax-summary
+railway up
+railway variables set KITE_API_KEY=...
+# etc
 ```
 
-This prints total trades, volume, and fees paid.
+Logs streamed to Railway dashboard. Telegram delivers per-scan summary.
 
 ---
 
-## Safety
+## Reject Audit (the feedback loop)
 
-The safety check conditions are not fixed — they come directly from your `rules.json`. If you build a strategy from a YouTube trader's transcripts using the Apify prompt, your safety check will reflect that trader's entry logic. If you use the example strategy, it reflects those conditions. They're yours, not a generic filter.
+After 60+ paper trades, audit `rejects.csv`:
 
-Every condition in your `entry_rules` must pass before a trade goes through. One fails — nothing happens. The bot tells you exactly which condition failed and the actual value it saw.
+```bash
+awk -F, 'NR>1{print $6}' rejects.csv | sort | uniq -c | sort -rn
+```
 
-Additional guardrails that apply regardless of strategy:
-- Maximum trade size capped at `MAX_TRADE_SIZE_USD` in `.env`
-- Maximum trades per day capped at `MAX_TRADES_PER_DAY` in `.env`
-- Position sizing calculated from your portfolio value — max 1% risk per trade
-- Every decision logged to `safety-check-log.json` with exact indicator values
-- Every executed trade recorded in `trades.csv` for accounting
+If one gate dominates (> 70% of rejects), it's mis-calibrated. Loosen or replace.
+If gates balanced, edge is clean.
 
-**This is not financial advice.** Build your strategy properly. Run the backtest. Paper trade before going live. Never put in more than you can afford to lose.
+Bucket trade outcomes by entry score (4 vs 5 vs 6+):
+```bash
+# Pseudo: filter trades.csv by Score column, compute win rate per bucket
+```
+If 4/7 win rate trails 5/7 by > 10%, raise `BUY_THRESHOLD=5`.
 
 ---
 
-## Resources
+## Reconciliation
 
-- [First video — Connect Claude to TradingView](https://youtu.be/vIX6ztULs4U)
-- [TradingView MCP repo (first video)](https://github.com/jackson-video-resources/tradingview-mcp-jackson)
-- [Apify](https://apify.com?fpr=3ly3yd) — search actor store for "YouTube Transcript Scraper"
-- [BitGet — $1,000 bonus on first deposit]([https://partner.bitget.com/bg/LewisJackson](https://bonus.bitget.com/LewisJackson))
+Every scan-start, `reconcilePositions` checks broker GTT state vs `positions.json`:
+
+- Local OPEN position with no live GTT → recreate trail GTT at current stop
+- Live GTT at broker not tied to local position → log warning (manual review)
+
+Survives bot crash mid-leg.
+
+---
+
+## Position Sizing
+
+```
+available  = portfolio − capital_locked_in_open_positions
+slot_share = available / slots_remaining
+qty        = min(slot_share / price, risk_amount / risk_distance)
+risk_amount = portfolio × RISK_PERCENT
+risk_distance = entry − stop, capped at 1% × entry
+```
+
+Hard 1% stop cap protects against wide stops in volatile names.
+
+---
+
+## Notes
+
+- **Paper mode default.** Flip `PAPER_TRADING=false` only after 60+ paper trades validate edge.
+- **GTT is two-leg native** on Kite (stop + target). Modify uses delete-then-recreate for reliability.
+- **Yahoo fallback** kicks in when Kite historical returns plan-restricted 403. Three symbols permanently broken on Yahoo: TATAMOTORS, ZOMATO, BARBEQUE — these run Kite-only.
+- **Confirmation candle** evaluated on last completed daily candle. EOD scan timing (15:35 IST) ensures candle is closed.
+- **Sector mapping** is partial. Symbols absent from `sectors.json` treated as `Unknown` and exempt from sector cap. Extend file as needed.
+
+---
+
+## License
+
+MIT.
