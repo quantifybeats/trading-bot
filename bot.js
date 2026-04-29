@@ -309,6 +309,133 @@ function volumePOC(candles, bins = 20) {
   return sorted.length ? parseFloat(sorted[0][0]) : null;
 }
 
+// ─── SMC Quality Gates (numeric defs — replace subjective "clean OB / messy structure") ──
+
+// OB clean = displacement candle ≥ 1.5×ATR14, OB untested since formation, single-candle origin.
+function obQuality(candles, ob, atrV) {
+  if (!ob || !atrV) return { clean: false, reason: "no OB or ATR" };
+  // Locate OB candle index by matching open/close band.
+  let idx = -1;
+  for (let i = candles.length - 4; i >= 2; i--) {
+    const c = candles[i];
+    const hi = Math.max(c.open, c.close), lo = Math.min(c.open, c.close);
+    if (Math.abs(hi - ob.high) / ob.high < 0.001 && Math.abs(lo - ob.low) / ob.low < 0.001) {
+      idx = i; break;
+    }
+  }
+  if (idx < 0) return { clean: false, reason: "OB candle not found" };
+  // Displacement = next 1-2 candles range vs ATR
+  const next = candles[idx + 1], next2 = candles[idx + 2];
+  if (!next || !next2) return { clean: false, reason: "no displacement window" };
+  const displacement = Math.max(next.high, next2.high) - Math.min(next.low, next2.low);
+  if (displacement < atrV * 1.5) return { clean: false, reason: `weak displacement ${(displacement/atrV).toFixed(2)}xATR` };
+  // Untested since: no candle low has dipped into OB body (already checked in findBullishOB, recheck strict)
+  const since = candles.slice(idx + 1);
+  const tested = since.some((x) => x.low < ob.high && x.high > ob.low);
+  if (tested) return { clean: false, reason: "OB already mitigated" };
+  return { clean: true, reason: "" };
+}
+
+// Structure clean = last 3 swings show HH+HL sequence, no excessive wick overlap.
+function structureClean(candles, lookback = 30) {
+  if (candles.length < lookback) return { clean: false, reason: "insufficient candles" };
+  const { highs, lows } = swingHighsLows(candles.slice(-lookback), 3, 3);
+  if (highs.length < 2 || lows.length < 2) return { clean: false, reason: "too few swings" };
+  const hh = highs[highs.length - 1] > highs[highs.length - 2];
+  const hl = lows[lows.length - 1]  > lows[lows.length - 2];
+  if (!hh || !hl) return { clean: false, reason: !hh ? "no HH" : "no HL" };
+  // Wick overlap: last 5 candles, count where wick > 50% of range
+  const recent5 = candles.slice(-5);
+  const choppy  = recent5.filter((c) => {
+    const range = c.high - c.low;
+    if (range === 0) return false;
+    const body = Math.abs(c.close - c.open);
+    return (range - body) / range > 0.5;
+  }).length;
+  if (choppy >= 4) return { clean: false, reason: `${choppy}/5 candles dominated by wicks` };
+  return { clean: true, reason: "" };
+}
+
+// Extended = 3+ consecutive green candles → already in move, pullback gone.
+function isExtended(candles) {
+  if (candles.length < 3) return false;
+  const last3 = candles.slice(-3);
+  return last3.every((c) => c.close > c.open);
+}
+
+// Retail trap = entry within 0.3% of obvious 20d swing high.
+function nearSwingHigh(price, candles, lookback = 20, pct = 0.003) {
+  if (candles.length < lookback) return false;
+  const hi = Math.max(...candles.slice(-lookback).map((c) => c.high));
+  return Math.abs(price - hi) / hi < pct;
+}
+
+// Pullback-into-OB = price within OB body now, after move up to it.
+function isPullbackIntoOB(price, ob) {
+  if (!ob) return false;
+  return price >= ob.low && price <= ob.high * 1.005;
+}
+
+// Pullback-into-FVG = price inside FVG band.
+function isPullbackIntoFVG(price, fvg) {
+  if (!fvg) return false;
+  return price >= fvg.low && price <= fvg.high;
+}
+
+// Confirmation candle = bullish engulfing OR bullish pin bar on last completed candle.
+function confirmationCandle(candles) {
+  if (candles.length < 2) return { ok: false, reason: "no candles" };
+  const c = candles[candles.length - 1], p = candles[candles.length - 2];
+  const range = c.high - c.low;
+  if (range === 0) return { ok: false, reason: "flat candle" };
+  const body = Math.abs(c.close - c.open);
+  const lowerWick = Math.min(c.open, c.close) - c.low;
+
+  // Bullish engulf: prev bearish, curr bullish, curr body engulfs prev body
+  const prevBear = p.close < p.open;
+  const currBull = c.close > c.open;
+  const engulf   = prevBear && currBull && c.close >= p.open && c.open <= p.close;
+
+  // Pin bar: lower wick ≥ 2× body, body ≤ 30% of range, closes in upper half
+  const pin = lowerWick >= body * 2 && body / range <= 0.3 && c.close > (c.high + c.low) / 2;
+
+  if (engulf) return { ok: true, reason: "bullish engulf" };
+  if (pin)    return { ok: true, reason: "bullish pin bar" };
+  return { ok: false, reason: "no engulf/pin confirmation" };
+}
+
+// Weekly regime gate: ADX-lite (trend strength via DM% over weekly candles) OR weekly HH/HL intact.
+function weeklyRegimeOk(weeklyCandles) {
+  if (weeklyCandles.length < 14) return { ok: false, reason: "weekly history short" };
+  // HH/HL on weekly = simplest regime check
+  const hh = hhhl(weeklyCandles, 10);
+  if (hh) return { ok: true, reason: "weekly HH/HL intact" };
+  // ADX-lite: avg directional range over 14 weeks vs avg true range
+  const w = weeklyCandles.slice(-14);
+  let plusDM = 0, minusDM = 0, trSum = 0;
+  for (let i = 1; i < w.length; i++) {
+    const up   = w[i].high - w[i - 1].high;
+    const down = w[i - 1].low - w[i].low;
+    if (up > down && up > 0)   plusDM  += up;
+    if (down > up && down > 0) minusDM += down;
+    trSum += Math.max(w[i].high - w[i].low, Math.abs(w[i].high - w[i - 1].close), Math.abs(w[i].low - w[i - 1].close));
+  }
+  if (trSum === 0) return { ok: false, reason: "no range" };
+  const dx = Math.abs(plusDM - minusDM) / (plusDM + minusDM || 1) * 100;
+  if (dx >= 25 && plusDM > minusDM) return { ok: true, reason: `weekly DX ${dx.toFixed(0)} bullish` };
+  return { ok: false, reason: `weekly chop (DX ${dx.toFixed(0)})` };
+}
+
+// Friction-aware RR validator. Cost in fraction (e.g. 0.005 = 0.5%).
+function rrAfterCost(entry, stop, target, costFrac = 0.005) {
+  const risk   = entry - stop;
+  const reward = target - entry;
+  const cost   = entry * costFrac;
+  if (risk <= 0) return { ok: false, rr: 0, reason: "non-positive risk" };
+  const rr = (reward - cost) / risk;
+  return { ok: rr >= 2, rr: Number(rr.toFixed(2)), reason: rr >= 2 ? "" : `RR ${rr.toFixed(2)} < 2 after cost` };
+}
+
 // ─── Institutional scorer — 1 hard block + 5 weighted SMC conditions ─────────
 //
 //   Max score = 7pts.  BUY ≥ 4  |  STRONG BUY ≥ 6
@@ -363,6 +490,7 @@ function scoreStock(symbol, daily, indexDaily) {
 
   for (const { id, label, hardBlock } of CONDITIONS) {
     if (hardBlock && !vals[id]) {
+      logReject({ symbol, score: 0, signal: "BLOCKED", gate: "HARD_BLOCK", reason: label, price });
       return { symbol, price, score: 0, maxScore: 7, signal: "BLOCKED", blockedBy: label, vals, indicators };
     }
   }
@@ -545,6 +673,52 @@ async function syncGTTStatuses(kite, openPos) {
   return synced;
 }
 
+// ─── Reconciliation (broker state vs local positions) ───────────────────────
+// Runs on every scan start. Detects:
+//   - Local OPEN position with no live GTT at broker → flag, try to recreate trail GTT
+//   - Live GTT at broker not tied to any local position → log warning (manual review)
+async function reconcilePositions(kite, openPos) {
+  if (CONFIG.paperTrading || openPos.length === 0) return;
+  const warnings = [];
+  let liveGTTs   = [];
+  try {
+    liveGTTs = await kite.listGTTs?.() || [];
+  } catch { return; /* GTT list API failure → skip silently */ }
+
+  const liveById     = new Map(liveGTTs.filter((g) => g.status === "active").map((g) => [g.id, g]));
+  const localGttIds  = new Set(openPos.flatMap((p) => [p.gtt_id, p.gtt_trail_id]).filter(Boolean));
+
+  // Local position → no matching live GTT
+  for (const pos of openPos) {
+    const ids = [pos.gtt_id, pos.gtt_trail_id].filter(Boolean);
+    const anyLive = ids.some((id) => liveById.has(id));
+    if (!anyLive && ids.length) {
+      warnings.push(`${pos.symbol}: GTT ${ids.join("/")} missing at broker`);
+      // Try to recreate stop GTT for remaining qty
+      try {
+        const newId = await placeTrailGTT(kite, pos.symbol, pos.stopLoss, pos.remainingQty);
+        updatePosition(pos.id, { gtt_id: newId, gtt_trail_id: null });
+        warnings.push(`  → recreated GTT ${newId} @ ₹${pos.stopLoss.toFixed(2)}`);
+      } catch (err) {
+        warnings.push(`  → GTT recreate failed: ${err.message}`);
+      }
+    }
+  }
+
+  // Live GTT at broker → no matching local position
+  for (const g of liveGTTs) {
+    if (g.status === "active" && !localGttIds.has(g.id)) {
+      warnings.push(`Orphan GTT ${g.id} at broker — manual review`);
+    }
+  }
+
+  if (warnings.length) {
+    console.log("── Reconciliation Warnings ───────────────────────────────");
+    warnings.forEach((w) => console.log(`  ⚠️  ${w}`));
+    console.log("");
+  }
+}
+
 // ─── Exit evaluation ──────────────────────────────────────────────────────────
 
 function evaluateExit(pos, candles) {
@@ -584,8 +758,15 @@ function evaluateExit(pos, candles) {
   if (profitATR >= 2.5 && atrV) newStop = Math.max(pos.stopLoss, price - atrV * 0.5);
   else if (pos.target1Hit && trailEma) newStop = Math.max(pos.stopLoss, trailEma);
 
-  if (daysHeld >= pos.maxDaysHeld && price <= pos.entryPrice * 1.005)
-    return { action: "FULL EXIT", reason: `⏰ ${daysHeld} days — no progress, opportunity cost exit`, price };
+  // Stagnation stop — replaces hard time stop. If price hasn't moved > 0.5×ATR over last
+  // STAGNATION_BARS sessions AND held ≥ STAGNATION_BARS days → exit (capital efficiency).
+  const STAGNATION_BARS = 10;
+  if (atrV && daysHeld >= STAGNATION_BARS && candles.length >= STAGNATION_BARS) {
+    const window  = candles.slice(-STAGNATION_BARS);
+    const range   = Math.max(...window.map((c) => c.high)) - Math.min(...window.map((c) => c.low));
+    if (range < atrV * 0.5)
+      return { action: "FULL EXIT", reason: `🐌 Stagnation — ${STAGNATION_BARS} sessions range ${range.toFixed(2)} < 0.5×ATR ${(atrV*0.5).toFixed(2)}`, price };
+  }
 
   return { action: "HOLD", price, newStop, trailEma, daysHeld, profitPct: pnlPct(price, pos.entryPrice) };
 }
@@ -781,6 +962,34 @@ function taxSummary() {
   console.log(`\n── Tax Summary ──\n  Live buys: ${buys.length}  Live sells: ${sells.length}  Paper: ${paper.length}\n  Volume: ₹${vol.toFixed(2)}  Fees: ₹${fees.toFixed(4)}\n  File: ${CSV_FILE}\n`);
 }
 
+// ─── Reject logging ───────────────────────────────────────────────────────────
+// Every gate that filters a candidate trade writes a row here.
+// Audit after N scans: if one gate dominates, calibrate. If all balanced, edge clean.
+
+const REJECTS_FILE    = "rejects.csv";
+const REJECTS_HEADERS = ["Date","Time (IST)","Symbol","Score","Signal","Gate","Reason","Price","Session"].join(",");
+
+function initRejectsCsv() {
+  if (!existsSync(REJECTS_FILE)) writeFileSync(REJECTS_FILE, REJECTS_HEADERS + "\n");
+}
+
+function logReject({ symbol, score = "", signal = "", gate, reason, price = "" }) {
+  initRejectsCsv();
+  const now = new Date();
+  const row = [
+    now.toISOString().slice(0, 10),
+    `"${toISTStr(now).replace(/,/g, " ")}"`,
+    symbol,
+    score,
+    signal,
+    gate,
+    `"${(reason || "").replace(/"/g, "'")}"`,
+    price === "" ? "" : Number(price).toFixed(2),
+    sessionId,
+  ].join(",");
+  appendFileSync(REJECTS_FILE, row + "\n");
+}
+
 // ─── Scan log ─────────────────────────────────────────────────────────────────
 
 const LOG_FILE = "safety-check-log.json";
@@ -972,6 +1181,7 @@ async function syncWithKite(kite) {
 
 async function scan() {
   initCsv();
+  initRejectsCsv();
   const kite = initKite();
 
   // ── Header: profile + margins ───────────────────────────────────────────────
@@ -1110,6 +1320,7 @@ async function scan() {
 
   const positions = loadPositions();
   const openPos   = openPositions(positions);
+  await reconcilePositions(kite, openPos);
   await checkAndExecuteExits(kite, openPos);
 
   // ── ENTRY SCAN ──────────────────────────────────────────────────────────────
@@ -1199,9 +1410,87 @@ async function scan() {
     && marketOpen && preMarketDone
     && !circuitTripped && !consecHaltTripped && !weeklyCapHit;
 
-  const tradeable = canEnterNew
-    ? [...sbList, ...buyList].filter((r) => !heldSymbols.has(r.symbol) && !isSymbolLocked(r.symbol)).slice(0, Math.min(remaining, slotsLeft, weeklyLeft))
+  // ── Quality gate: only candidates passing numeric SMC checks reach entry ────
+  const COST_FRAC = parseFloat(process.env.FRICTION_COST_FRAC || "0.005");
+
+  const candidates = canEnterNew
+    ? [...sbList, ...buyList].filter((r) => !heldSymbols.has(r.symbol) && !isSymbolLocked(r.symbol))
     : [];
+
+  // Sector data (optional file). Map: symbol → sector. Missing → "Unknown" (uncapped).
+  const SECTORS = existsSync("sectors.json") ? JSON.parse(readFileSync("sectors.json", "utf8")) : {};
+  const MAX_PER_SECTOR = parseInt(process.env.MAX_PER_SECTOR || "2");
+  const openSectorCount = openPositions(loadPositions()).reduce((m, p) => {
+    const s = SECTORS[p.symbol] || "Unknown";
+    m[s] = (m[s] || 0) + 1;
+    return m;
+  }, {});
+
+  const tradeable = [];
+  for (const r of candidates) {
+    const { ob, fvg, atrV } = r.indicators;
+    const dailyCandles = r.daily;
+    const weeklyCandles = toWeekly(dailyCandles);
+
+    // Gate A — OB quality (only enforced if OB is contributing to score)
+    if (r.vals?.near_ob) {
+      const q = obQuality(dailyCandles, ob, atrV);
+      if (!q.clean) {
+        logReject({ symbol: r.symbol, score: r.score, signal: r.signal, gate: "OB_QUALITY", reason: q.reason, price: r.price });
+        continue;
+      }
+    }
+
+    // Gate B — Structure clean
+    const s = structureClean(dailyCandles);
+    if (!s.clean) {
+      logReject({ symbol: r.symbol, score: r.score, signal: r.signal, gate: "STRUCTURE", reason: s.reason, price: r.price });
+      continue;
+    }
+
+    // Gate C — Pullback-only: must be inside OB or FVG (no breakout chasing)
+    if (!isPullbackIntoOB(r.price, ob) && !isPullbackIntoFVG(r.price, fvg)) {
+      logReject({ symbol: r.symbol, score: r.score, signal: r.signal, gate: "PULLBACK_ONLY", reason: "price not inside OB/FVG", price: r.price });
+      continue;
+    }
+
+    // Gate D — Not extended (3+ consecutive green = chase)
+    if (isExtended(dailyCandles)) {
+      logReject({ symbol: r.symbol, score: r.score, signal: r.signal, gate: "EXTENDED", reason: "3+ consecutive green candles", price: r.price });
+      continue;
+    }
+
+    // Gate E — Retail trap: entry within 0.3% of 20d swing high
+    if (nearSwingHigh(r.price, dailyCandles)) {
+      logReject({ symbol: r.symbol, score: r.score, signal: r.signal, gate: "RETAIL_TRAP", reason: "within 0.3% of 20d high", price: r.price });
+      continue;
+    }
+
+    // Gate F — Confirmation candle (bullish engulf / pin) at OB tap
+    const confirm = confirmationCandle(dailyCandles);
+    if (!confirm.ok) {
+      logReject({ symbol: r.symbol, score: r.score, signal: r.signal, gate: "CONFIRMATION", reason: confirm.reason, price: r.price });
+      continue;
+    }
+
+    // Gate G — Weekly regime (HH/HL intact OR weekly DX bullish)
+    const regime = weeklyRegimeOk(weeklyCandles);
+    if (!regime.ok) {
+      logReject({ symbol: r.symbol, score: r.score, signal: r.signal, gate: "REGIME", reason: regime.reason, price: r.price });
+      continue;
+    }
+
+    // Gate H — Sector concentration cap
+    const sector = SECTORS[r.symbol] || "Unknown";
+    if (sector !== "Unknown" && (openSectorCount[sector] || 0) >= MAX_PER_SECTOR) {
+      logReject({ symbol: r.symbol, score: r.score, signal: r.signal, gate: "SECTOR_CAP", reason: `${sector} already has ${openSectorCount[sector]}/${MAX_PER_SECTOR}`, price: r.price });
+      continue;
+    }
+
+    tradeable.push(r);
+    openSectorCount[sector] = (openSectorCount[sector] || 0) + 1;
+    if (tradeable.length >= Math.min(remaining, slotsLeft, weeklyLeft)) break;
+  }
 
   const executed = [];
 
@@ -1226,8 +1515,17 @@ async function scan() {
       const totalINR  = qty * r.price;
       const fee       = totalINR * 0.0003;
 
+      // ── Friction-aware RR gate ────────────────────────────────────────────────
+      const rrCheck = rrAfterCost(r.price, stopPrice, target1, COST_FRAC);
+      if (!rrCheck.ok) {
+        logReject({ symbol: r.symbol, score: r.score, signal: r.signal, gate: "RR_AFTER_COST", reason: rrCheck.reason, price: r.price });
+        console.log(`  ⚠️  ${displaySym(r.symbol)} skipped — ${rrCheck.reason}`);
+        continue;
+      }
+
       // ── Price filter ──────────────────────────────────────────────────────────
     if (r.price > priceLimit) {
+      logReject({ symbol: r.symbol, score: r.score, signal: r.signal, gate: "PRICE_LIMIT", reason: `₹${r.price?.toFixed(0)} > ₹${priceLimit}`, price: r.price });
       console.log(`  ⚠️  ${displaySym(r.symbol)} skipped — ₹${r.price?.toFixed(0)} > ₹${priceLimit} limit`);
       if (r.signal === "STRONG BUY") {
         const tok = process.env.TELEGRAM_BOT_TOKEN, cid = process.env.TELEGRAM_CHAT_ID;
@@ -1424,6 +1722,19 @@ async function scan() {
     results: results.map(({ symbol, score, signal, failed, error }) => ({ symbol, score, signal, failed, error })),
   });
   saveLog(log);
+
+  // ── Reject audit summary (this session only) ───────────────────────────────
+  if (existsSync(REJECTS_FILE)) {
+    const rows = readFileSync(REJECTS_FILE, "utf8").trim().split("\n").slice(1)
+                  .map((l) => l.split(",")).filter((r) => r[r.length - 1] === sessionId);
+    if (rows.length) {
+      const byGate = rows.reduce((m, r) => { const g = r[5]; m[g] = (m[g] || 0) + 1; return m; }, {});
+      console.log("\n── Reject Audit (this session) ─────────────────────────");
+      Object.entries(byGate).sort((a, b) => b[1] - a[1])
+        .forEach(([g, n]) => console.log(`  ${pad(g, 18)} ${n}`));
+      console.log(`  → ${REJECTS_FILE}\n`);
+    }
+  }
 
   console.log(`Decision log → ${LOG_FILE} | Positions → ${POSITIONS_FILE}`);
   console.log("═══════════════════════════════════════════════════════════\n");
